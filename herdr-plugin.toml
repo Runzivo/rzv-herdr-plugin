@@ -1,0 +1,47 @@
+id = "runzivo.sandboxes"
+name = "Runzivo sandboxes"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Run Herdr panes in Runzivo cloud sandboxes: create, attach, status and cost, sleep, wake and delete, through the rzv CLI."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "create"
+title = "Runzivo: create a sandbox machine"
+command = ["bash", "bin/open-pane.sh", "create"]
+
+[[actions]]
+id = "attach"
+title = "Runzivo: attach a sandbox machine"
+command = ["bash", "bin/open-pane.sh", "attach"]
+
+[[actions]]
+id = "status"
+title = "Runzivo: sandbox status and cost"
+command = ["bash", "bin/open-pane.sh", "status"]
+
+[[actions]]
+id = "list"
+title = "Runzivo: list sandboxes"
+command = ["bash", "bin/open-pane.sh", "list"]
+
+[[actions]]
+id = "sleep"
+title = "Runzivo: sleep a sandbox"
+command = ["bash", "bin/open-pane.sh", "sleep"]
+
+[[actions]]
+id = "wake"
+title = "Runzivo: wake a sandbox"
+command = ["bash", "bin/open-pane.sh", "wake"]
+
+[[actions]]
+id = "delete"
+title = "Runzivo: delete a sandbox"
+command = ["bash", "bin/open-pane.sh", "delete"]
+
+[[panes]]
+id = "console"
+title = "Runzivo"
+placement = "overlay"
+command = ["bash", "bin/pane.sh"]

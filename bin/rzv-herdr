@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+# Runzivo sandboxes as Herdr machines. This script calls only the rzv CLI,
+# OpenSSH and Herdr. It stores no tokens and reads none of your files.
+#
+#   rzv-herdr create [--name <slug>] [--size <size>] [--lifetime 8h|12h|24h] [--disk-gib <n>]
+#   rzv-herdr attach|status|sleep|wake [<sandbox>]
+#   rzv-herdr delete [<sandbox>] [--yes]
+#   rzv-herdr list
+#
+# <sandbox> is a sandbox id or name. Without one, an interactive terminal
+# offers the herdr-* sandboxes to pick from.
+set -euo pipefail
+
+version=0.1.0
+min_rzv=0.26.0
+install_hint='curl -fsSL https://runzivo.dev/downloads/rzv/install.sh | sh'
+herdr="${HERDR_BIN_PATH:-herdr}"
+state="${HERDR_PLUGIN_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/rzv-herdr}"
+ws=(${RZV_HERDR_WORKSPACE:+--workspace "$RZV_HERDR_WORKSPACE"})
+rzv="" out="" sandbox="" name=""
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'rzv-herdr: %s\n' "$*" >&2; exit 1; }
+tty() { [ -t 0 ]; } # stdin only: prompts run inside $(...)
+ask() { # ask <prompt> <default>: the answer, or the default without a terminal
+  local reply=""
+  if tty; then read -r -p "$1 [$2]: " reply || true; fi
+  printf '%s' "${reply:-$2}"
+}
+
+# Readers for flat JSON fields, enough for rzv and Herdr --json output.
+jstr() { grep -oE "\"$1\": *\"[^\"]*\"" | head -1 | sed -E 's/^"[^"]*": *"//; s/"$//' || true; }
+jnum() { grep -oE "\"$1\": *-?[0-9.]+" | head -1 | sed -E 's/^"[^"]*": *//' || true; }
+
+version_ge() { # version_ge <a> <b>: a >= b for x.y.z
+  local IFS=. i a b
+  read -r -a a <<<"$1"
+  read -r -a b <<<"$2"
+  for i in 0 1 2; do
+    [ "${a[i]:-0}" -gt "${b[i]:-0}" ] && return 0
+    [ "${a[i]:-0}" -lt "${b[i]:-0}" ] && return 1
+  done
+  return 0
+}
+
+find_rzv() {
+  if [ -n "${RZV_BIN:-}" ]; then
+    [ -x "$RZV_BIN" ] || die "RZV_BIN is set to $RZV_BIN, which is not an executable."
+    rzv=$RZV_BIN
+  elif command -v rzv >/dev/null 2>&1; then
+    rzv=$(command -v rzv)
+  elif [ -x "$HOME/.local/bin/rzv" ]; then
+    rzv=$HOME/.local/bin/rzv
+  else
+    die "The Runzivo CLI (rzv) is not installed. Install it with: $install_hint"
+  fi
+  local v
+  v=$("$rzv" --version 2>/dev/null | awk '{print $2}')
+  if [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! version_ge "$v" "$min_rzv"; then
+    die "rzv $v is too old: this plugin needs $min_rzv or newer. Update with: $install_hint"
+  fi
+}
+
+explain() { # explain <code> <message>: a clear message and the next step
+  case "$1" in
+    authentication_required | reauth_required) say "You are not signed in to Runzivo. Run: rzv login" ;;
+    credit_exhausted) say "Your workspace is out of credit. Add credit with 'rzv billing' or in the Runzivo portal, then try again." ;;
+    sandbox_capacity_busy | no_capacity) say "Runzivo has no free sandbox capacity right now. Try again in a few minutes." ;;
+    sandbox_limit_reached) say "Your workspace is already running its maximum number of sandboxes. Sleep or delete one ('rzv-herdr list'), then try again." ;;
+    sandbox_expired) say "This sandbox reached the end of its lifetime and cannot start again. Delete it and create a new one." ;;
+    *) say "${2:-rzv failed${1:+ ($1)}.}" ;;
+  esac
+}
+
+rz() { # rz <rzv args>: run rzv with --json, result in $out; explain any error and exit
+  mkdir -p "$state"
+  local err="$state/rzv.err" code msg
+  if out=$("$rzv" "$@" ${ws[@]+"${ws[@]}"} --json 2>"$err"); then
+    rm -f "$err"
+    return 0
+  fi
+  code=$(jstr error <"$err")
+  msg=$(jstr message <"$err")
+  [ -n "$code$msg" ] || msg=$(head -c 300 "$err")
+  rm -f "$err"
+  explain "$code" "$msg" >&2
+  exit 1
+}
+
+field() { rz sandboxes get "$sandbox"; jstr "$1" <<<"$out"; }
+
+wait_status() { # wait_status <want> <seconds>
+  local deadline=$((SECONDS + $2)) st=""
+  while :; do
+    st=$(field status)
+    [ "$st" = "$1" ] && return 0
+    case "$st" in failed | deleted) die "The sandbox is $st. $(jstr message <<<"$out")" ;; esac
+    [ "$SECONDS" -lt "$deadline" ] || die "The sandbox is still $st after $2 seconds. Check it with: rzv-herdr status $sandbox"
+    printf '  %s...\r' "$st"
+    sleep 5
+  done
+}
+
+# Sandboxes as "id name status" lines, without deleted ones.
+sandboxes() {
+  rz sandboxes list
+  grep -o '{"id":"sbx_[^}]*' <<<"$out" | while read -r obj; do
+    local st
+    st=$(jstr status <<<"$obj")
+    [ "$st" = deleted ] || printf '%s %s %s\n' "$(jstr id <<<"$obj")" "$(jstr name <<<"$obj")" "$st"
+  done || true
+}
+
+pick() { # pick [<id-or-name>]: sets sandbox and name
+  local rows want="${1:-}" i=0 n
+  rows=$(sandboxes)
+  if [ -n "$want" ]; then
+    read -r sandbox name _ < <(awk -v w="$want" '$1==w || $2==w' <<<"$rows") || true
+    [ -n "$sandbox" ] || die "No sandbox called $want in this workspace. See: rzv-herdr list"
+    return
+  fi
+  rows=$(awk '$2 ~ /^herdr-/' <<<"$rows")
+  [ -n "$rows" ] || die "You have no herdr-* sandboxes. Create one with: rzv-herdr create"
+  if [ "$(wc -l <<<"$rows")" -eq 1 ]; then
+    read -r sandbox name _ <<<"$rows"
+    return
+  fi
+  tty || die "Several herdr-* sandboxes exist; name the one you mean. See: rzv-herdr list"
+  while read -r line; do i=$((i + 1)); say "  $i) $line"; done <<<"$rows"
+  n=$(ask "Sandbox number" 1)
+  read -r sandbox name _ < <(sed -n "${n}p" <<<"$rows") || true
+  [ -n "$sandbox" ] || die "There is no sandbox number $n."
+}
+
+alias_of() { printf '%s.rzv' "$sandbox"; }
+on() { ssh -o BatchMode=yes -o ConnectTimeout=20 "$(alias_of)" "$@"; }
+
+ssh_ready() {
+  "$rzv" sandboxes ssh-config "$sandbox" ${ws[@]+"${ws[@]}"} --write >/dev/null
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    on true 2>/dev/null && return 0
+    sleep 5
+  done
+  die "SSH to $(alias_of) does not answer yet. Try again with: rzv-herdr attach $name"
+}
+
+profile() { # the Herdr machine profile id for this sandbox, or nothing
+  "$herdr" machine list --json 2>/dev/null | tr -d '\n' | tr '{' '\n' | grep -F "\"$(alias_of)\"" | jstr id || true
+}
+
+ensure_machine() {
+  # The sandbox may have lost Herdr (or never had it): let Herdr's own
+  # setup install it, with your approval, by adding the machine again.
+  # shellcheck disable=SC2016 # $HOME expands in the sandbox
+  if ! on 'test -x "$HOME/.local/bin/herdr"'; then
+    local id
+    id=$(profile)
+    [ -z "$id" ] || "$herdr" machine remove "$id" >/dev/null
+  fi
+  if [ -z "$(profile)" ]; then
+    say "Adding $name to Herdr. Herdr may ask to install itself in the sandbox."
+    "$herdr" machine add "$(alias_of)" --label "$name" --remote-session default ||
+      die "Herdr could not add the machine. Fix the message above, then run: rzv-herdr attach $name"
+    return
+  fi
+  # A wake ends the Herdr server. Start it again, detached, as Herdr does.
+  # shellcheck disable=SC2016 # $HOME expands in the sandbox
+  on 'pgrep -x herdr >/dev/null || { setsid -f "$HOME/.local/bin/herdr" server >/dev/null 2>&1 </dev/null; sleep 2; }'
+}
+
+machine_state() { "$herdr" machine status "$name" --json 2>/dev/null | jstr status || true; }
+
+cmd_create() {
+  local slug="" size="" life="" disk=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) slug=$2; shift 2 ;;
+      --size) size=$2; shift 2 ;;
+      --lifetime) life=$2; shift 2 ;;
+      --disk-gib) disk=(--disk-gib "$2"); shift 2 ;;
+      *) die "Unknown option $1 for create." ;;
+    esac
+  done
+  [ -n "$slug" ] || slug=$(ask "Name (herdr- is added)" "$(date +%m%d-%H%M)")
+  [ -n "$size" ] || size=$(ask "Size (2vcpu-8gb, 4vcpu-16gb, 8vcpu-32gb, 16vcpu-64gb)" 2vcpu-8gb)
+  [ -n "$life" ] || life=$(ask "Lifetime (8h, 12h, 24h)" 8h)
+  slug=$(tr '[:upper:]' '[:lower:]' <<<"${slug#herdr-}" | tr -c 'a-z0-9-\n' '-')
+  name="herdr-$slug"
+  say "Creating $name ($size, $life). Runtime is billed in equivalent minutes until you sleep or delete it."
+  rz sandboxes create --name "$name" --size "$size" --lifetime "$life" ${disk[@]+"${disk[@]}"} \
+    --idempotency-key "$name-$(date +%s)-$$"
+  sandbox=$(jstr id <<<"$out")
+  [ -n "$sandbox" ] || die "rzv did not return a sandbox id. See: rzv-herdr list"
+  wait_status running 600
+  ssh_ready
+  ensure_machine
+  say "Ready: $name ($sandbox) is in the Herdr sidebar. Or run: herdr --remote $(alias_of)"
+}
+
+cmd_attach() {
+  pick "${1:-}"
+  local st
+  st=$(field status)
+  case "$st" in
+    running) ;;
+    stopped) [ "$(ask "$name is asleep. Wake it? (y/n)" y)" = y ] || exit 1; cmd_wake "$sandbox"; return ;;
+    *) die "$name is $st; it must be running. Check: rzv-herdr status $name" ;;
+  esac
+  ssh_ready
+  ensure_machine
+  say "$name: Herdr machine is $(machine_state). Open it from the sidebar, or run: herdr --remote $(alias_of)"
+}
+
+hm() { local s=${1:-0}; s=${s%.*}; printf '%dh %02dm' $((s / 3600)) $((s % 3600 / 60)); }
+
+cmd_status() {
+  pick "${1:-}"
+  rz sandboxes get "$sandbox"
+  local j=$out
+  say "Sandbox:      $name ($sandbox)"
+  say "Status:       $(jstr status <<<"$j")"
+  say "Size:         $(jstr size <<<"$j"), $(jnum disk_gib <<<"$j") GiB disk"
+  say "Expires:      $(jstr expires_at <<<"$j") ($(hm "$(jnum remaining_seconds <<<"$j")") left)"
+  say "Runtime:      $(hm "$(jnum runtime_seconds <<<"$j")")"
+  say "Credits used: $(printf '%.1f' "$(jnum credits_used <<<"$j")") equivalent minutes"
+  say "SSH:          $(alias_of)"
+  if [ -n "$(profile)" ]; then
+    say "Herdr:        machine $(machine_state)"
+  else
+    say "Herdr:        not added (run: rzv-herdr attach $name)"
+  fi
+}
+
+cmd_sleep() {
+  pick "${1:-}"
+  say "Stopping $name. Compute billing stops. Running panes and the Herdr server end."
+  rz sandboxes stop "$sandbox"
+  wait_status stopped 300
+  say "$name is asleep. Files in /workspace are kept; do not rely on anything else. Wake it with: rzv-herdr wake $name"
+}
+
+cmd_wake() {
+  pick "${1:-}"
+  say "Starting $name."
+  rz sandboxes start "$sandbox"
+  wait_status running 600
+  ssh_ready
+  ensure_machine
+  say "$name is awake. Herdr machine is $(machine_state). Start new panes; old processes ended at sleep."
+}
+
+cmd_delete() {
+  local yes="" target=""
+  for a in "$@"; do case "$a" in --yes | -y) yes=1 ;; *) target=$a ;; esac; done
+  pick "$target"
+  if [ -z "$yes" ]; then
+    tty || die "Deleting needs confirmation. Run it in a terminal, or add --yes."
+    say "This deletes $name ($sandbox) and everything in it, including /workspace."
+    [ "$(ask "Type the sandbox name to confirm" "")" = "$name" ] || die "Not deleted."
+  fi
+  local id
+  id=$(profile)
+  [ -z "$id" ] || "$herdr" machine remove "$id" >/dev/null || say "Could not remove the Herdr machine $id; remove it with: herdr machine remove $id"
+  rz sandboxes delete "$sandbox"
+  rm -f "$HOME/.ssh/rzv/$sandbox.conf"
+  say "Deleted $name and its Herdr machine."
+}
+
+cmd_list() {
+  local rows
+  rows=$(sandboxes)
+  [ -n "$rows" ] || { say "No sandboxes. Create one with: rzv-herdr create"; return; }
+  say "$rows"
+}
+
+main() {
+  local cmd=${1:-help}
+  [ $# -eq 0 ] || shift
+  case "$cmd" in
+    -v | --version | version) say "rzv-herdr $version"; return ;;
+    help | -h | --help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; return ;;
+  esac
+  find_rzv
+  case "$cmd" in
+    create | attach | status | sleep | wake | delete | list) "cmd_$cmd" "$@" ;;
+    *) die "Unknown command $cmd. Run: rzv-herdr help" ;;
+  esac
+}
+
+main "$@"
