@@ -10,10 +10,15 @@ It stores no tokens, holds no AI provider keys and reads none of your code.
 
 ## Install
 
-You need Herdr 0.9.5 or newer on macOS or Linux, and `rzv` 0.26.0 or newer. If you don't have Herdr yet, install it with `brew install herdr` or its [install guide](https://herdr.dev/tui/docs/install/):
+You need Herdr 0.9.5 or newer on macOS or Linux, and `rzv` 0.26.0 or newer.
+
+Install Herdr first. On macOS, run `brew install herdr`. On Linux, or if you
+don't use Homebrew, follow the
+[Herdr install guide](https://herdr.dev/tui/docs/install/).
+
+Then install `rzv`, sign in and add the plugin:
 
 ```sh
-brew install herdr   # or see https://herdr.dev/tui/docs/install/
 curl -fsSL https://runzivo.dev/downloads/rzv/install.sh | sh
 rzv login
 herdr plugin install Runzivo/rzv-herdr-plugin
