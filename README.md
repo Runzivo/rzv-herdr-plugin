@@ -5,6 +5,10 @@ Run [Herdr](https://herdr.dev) panes and coding agents in a
 adds it to Herdr as a machine, and lets you check its cost, sleep it, wake it
 and delete it without leaving Herdr.
 
+[![CI](https://github.com/Runzivo/rzv-herdr-plugin/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Runzivo/rzv-herdr-plugin/actions/workflows/ci.yml) [![Latest release](https://img.shields.io/github/v/release/Runzivo/rzv-herdr-plugin)](https://github.com/Runzivo/rzv-herdr-plugin/releases/latest) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Runzivo](https://img.shields.io/badge/Runzivo-sandboxes-0B0F14)](https://runzivo.dev/sandboxes/)
+
+<img src="assets/demo.gif" width="1200" alt="Animated demo of Runzivo sandboxes for Herdr, in a terminal panel: herdr plugin install Runzivo/rzv-herdr-plugin, then the Runzivo pane creates herdr-e2e113910 (2vcpu-8gb, 8h), a remote Herdr pane runs uname -n in the sandbox, status shows 7h 59m left and 0.8 equivalent minutes used, then sleep, wake and a typed-name delete. The sandbox ID shown is a placeholder." />
+
 The plugin is a few Bash scripts that call the `rzv` CLI, OpenSSH and Herdr.
 It stores no tokens, holds no AI provider keys and reads none of your code.
 
