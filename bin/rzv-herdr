@@ -55,7 +55,7 @@ find_rzv() {
     die "The Runzivo CLI (rzv) is not installed. Install it with: $install_hint"
   fi
   local v
-  v=$("$rzv" --version 2>/dev/null | awk '{print $2}')
+  v=$("$rzv" --version 2>/dev/null | awk '{print $2}') || die "$rzv --version failed. Reinstall rzv with: $install_hint"
   if [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! version_ge "$v" "$min_rzv"; then
     die "rzv $v is too old: this plugin needs $min_rzv or newer. Update with: $install_hint"
   fi
@@ -74,7 +74,7 @@ explain() { # explain <code> <message>: a clear message and the next step
 
 rz() { # rz <rzv args>: run rzv with --json, result in $out; explain any error and exit
   mkdir -p "$state"
-  local err="$state/rzv.err" code msg
+  local err="$state/rzv.$$.err" code msg
   if out=$("$rzv" "$@" ${ws[@]+"${ws[@]}"} --json 2>"$err"); then
     rm -f "$err"
     return 0
@@ -92,22 +92,26 @@ field() { rz sandboxes get "$sandbox"; jstr "$1" <<<"$out"; }
 wait_status() { # wait_status <want> <seconds>
   local deadline=$((SECONDS + $2)) st=""
   while :; do
-    st=$(field status)
+    rz sandboxes get "$sandbox"
+    st=$(jstr status <<<"$out")
     [ "$st" = "$1" ] && return 0
-    case "$st" in failed | deleted) die "The sandbox is $st. $(jstr message <<<"$out")" ;; esac
+    case "$st" in
+      failed | expired | deleting | deleted | cleanup_pending) die "The sandbox is $st. $(jstr message <<<"$out")" ;;
+    esac
     [ "$SECONDS" -lt "$deadline" ] || die "The sandbox is still $st after $2 seconds. Check it with: rzv-herdr status $sandbox"
     printf '  %s...\r' "$st"
     sleep 5
   done
 }
 
-# Sandboxes as "id name status" lines, without deleted ones.
+# Sandboxes as "id name status" lines, without deleted or deleting ones.
 sandboxes() {
   rz sandboxes list
   grep -o '{"id":"sbx_[^}]*' <<<"$out" | while read -r obj; do
     local st
     st=$(jstr status <<<"$obj")
-    [ "$st" = deleted ] || printf '%s %s %s\n' "$(jstr id <<<"$obj")" "$(jstr name <<<"$obj")" "$st"
+    case "$st" in deleted | deleting | cleanup_pending) continue ;; esac
+    printf '%s %s %s\n' "$(jstr id <<<"$obj")" "$(jstr name <<<"$obj")" "$st"
   done || true
 }
 
@@ -152,11 +156,13 @@ profile() { # the Herdr machine profile id for this sandbox, or nothing
 ensure_machine() {
   # The sandbox may have lost Herdr (or never had it): let Herdr's own
   # setup install it, with your approval, by adding the machine again.
+  local have id
   # shellcheck disable=SC2016 # $HOME expands in the sandbox
-  if ! on 'test -x "$HOME/.local/bin/herdr"'; then
-    local id
+  have=$(on 'if test -x "$HOME/.local/bin/herdr"; then echo yes; else echo no; fi') ||
+    die "SSH to $(alias_of) failed. Try again with: rzv-herdr attach $name"
+  if [ "$have" = no ]; then
     id=$(profile)
-    [ -z "$id" ] || "$herdr" machine remove "$id" >/dev/null
+    [ -z "$id" ] || "$herdr" machine remove "$id" >/dev/null || die "Could not remove the old Herdr machine $id. Remove it with: herdr machine remove $id"
   fi
   if [ -z "$(profile)" ]; then
     say "Adding $name to Herdr. Herdr may ask to install itself in the sandbox."
@@ -174,6 +180,7 @@ machine_state() { "$herdr" machine status "$name" --json 2>/dev/null | jstr stat
 cmd_create() {
   local slug="" size="" life="" disk=()
   while [ $# -gt 0 ]; do
+    case "$1" in --name | --size | --lifetime | --disk-gib) [ $# -ge 2 ] || die "$1 needs a value." ;; esac
     case "$1" in
       --name) slug=$2; shift 2 ;;
       --size) size=$2; shift 2 ;;
@@ -259,12 +266,19 @@ cmd_delete() {
     say "This deletes $name ($sandbox) and everything in it, including /workspace."
     [ "$(ask "Type the sandbox name to confirm" "")" = "$name" ] || die "Not deleted."
   fi
-  local id
+  local id conf="$HOME/.ssh/rzv/$sandbox.conf"
   id=$(profile)
-  [ -z "$id" ] || "$herdr" machine remove "$id" >/dev/null || say "Could not remove the Herdr machine $id; remove it with: herdr machine remove $id"
   rz sandboxes delete "$sandbox"
-  rm -f "$HOME/.ssh/rzv/$sandbox.conf"
-  say "Deleted $name and its Herdr machine."
+  say "Deleted $name."
+  # Remove only the file rzv wrote for this sandbox.
+  if head -1 "$conf" 2>/dev/null | grep -q '^# Managed by rzv\.'; then rm -f "$conf"; fi
+  if [ -n "$id" ]; then
+    if "$herdr" machine remove "$id" >/dev/null; then
+      say "Removed its Herdr machine."
+    else
+      say "Could not remove the Herdr machine $id. Remove it with: herdr machine remove $id"
+    fi
+  fi
 }
 
 cmd_list() {

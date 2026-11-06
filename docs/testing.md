@@ -14,7 +14,8 @@ refused delete and a confirmed delete. It runs only against Runzivo's shared
 test environment and deletes its sandbox on exit.
 
 ```sh
-RZV_PROFILE=<shared profile> E2E_WORK=<short empty dir> E2E_REF=<branch or tag> \
+RZV_PROFILE=<shared profile> E2E_WORK=<short empty dir> E2E_LOCK=<lock dir> \
+  E2E_REF=<branch or tag> \
   scripts/20-shared-e2e.sh
 ```
 

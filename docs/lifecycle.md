@@ -30,9 +30,9 @@ expired sandbox to remove its Herdr machine too.
 
 ## Delete
 
-Delete asks you to type the sandbox name. It removes the Herdr machine,
-deletes the sandbox and removes its SSH config file. A wrong name deletes
-nothing.
+Delete asks you to type the sandbox name. It deletes the sandbox, then
+removes its SSH config file and its Herdr machine. A wrong name deletes
+nothing. If the delete fails, the machine stays, so you can retry.
 
 ## Reconnecting
 

@@ -10,11 +10,15 @@ permissions:
 
 jobs:
   check:
+    # Fork pull requests never run on Runzivo runners.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: rzv-ubuntu-24.04-x64-2vcpu-8gb
     timeout-minutes: 10
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Shell scripts
         run: |
           # Pinned release with its SHA-256, so CI does not depend on the Ubuntu package mirror.

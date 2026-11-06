@@ -43,7 +43,7 @@ have several.
 The same script works outside Herdr:
 
 ```sh
-dir=$(herdr plugin list --json | grep -o '"plugin_root":"[^"]*rzv-herdr-plugin[^"]*"' | cut -d'"' -f4)
+dir=$(herdr plugin list --plugin runzivo.sandboxes --json | grep -o '"plugin_root":"[^"]*"' | cut -d'"' -f4)
 "$dir/bin/rzv-herdr" status herdr-myname
 ```
 
